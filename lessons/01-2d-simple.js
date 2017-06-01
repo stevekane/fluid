@@ -2,12 +2,10 @@ const Regl = require('regl')
 const Camera = require('regl-camera')
 const BigTriangle = require('big-triangle')
 const FullScreenQuad = require('full-screen-quad')
+const NDArray = require('ndarray')
+const fill = require('ndarray-fill')
 const { random, sin, cos } = Math
 const rand = (min, max) => min + random() * (max - min)
-
-const WIDTH = HEIGHT = 128
-const TOTAL = WIDTH * HEIGHT
-const FLOATS_PER_UV = 2
 
 function field ( regl, width, height, data ) {
   const tConfig = { 
@@ -18,6 +16,7 @@ function field ( regl, width, height, data ) {
     // wrap: 'clamp', 
     mag: 'linear',
     min: 'linear',
+    type: 'float'
   }
 
   return [
@@ -34,6 +33,10 @@ function field ( regl, width, height, data ) {
   ]
 }
 
+function TextureBuffer ( w, h, d ) {
+  return NDArray(new Float32Array(w * h * d), [ w, h, d ])
+}
+
 const regl = Regl({
   extensions: [ 
     'OES_texture_float', 
@@ -41,34 +44,33 @@ const regl = Regl({
     'WEBGL_draw_buffers'
   ]
 })
-const initialVelocity = new Float32Array(WIDTH * HEIGHT * 4)
-const initialColors = new Float32Array(WIDTH * HEIGHT * 4)
-const initialPressures = new Float32Array(WIDTH * HEIGHT * 4)
 
-for ( var i = 0; i < TOTAL; i++ ) {
-  initialVelocity[4 * i] = rand(-1, 1)
-  initialVelocity[4 * i + 1] = rand(-1, 1)
-  initialColors[4 * i] = i / TOTAL
-  initialColors[4 * i + 1] = i / TOTAL
-  initialColors[4 * i + 2] = 0
-  initialColors[4 * i + 3] = 1
+const SIZE = 128
+
+const initialVelocity = TextureBuffer(SIZE, SIZE, 4)
+const initialColors = fill(TextureBuffer(SIZE, SIZE, 4), (i, j, k) => i / SIZE)
+const initialPressures = TextureBuffer(SIZE, SIZE, 4)
+
+for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
+  for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
+    initialVelocity.set(i, j, 0, rand(-i / SIZE, 1)) 
+    initialVelocity.set(i, j, 1, rand(-j / SIZE, 1)) 
+  }
 }
 
 const bigTriangle = regl.buffer(BigTriangle(4))
 const fullScreenQuad = regl.buffer(FullScreenQuad(4))
-const velocityBuffers = field(regl, WIDTH, HEIGHT, initialVelocity)
-const colorBuffers = field(regl, WIDTH, HEIGHT, initialColors)
-const pressureBuffers = field(regl, WIDTH, HEIGHT, initialPressures)
+const velocityBuffers = field(regl, SIZE, SIZE, initialVelocity)
+const colorBuffers = field(regl, SIZE, SIZE, initialColors)
+const pressureBuffers = field(regl, SIZE, SIZE, initialPressures)
 const divergenceBuffer = regl.framebuffer({ 
   depth: false,
   stencil: false,
   color: regl.texture({ 
     type: 'float', 
-    width: WIDTH, 
-    height: HEIGHT,
-    wrap: 'repeat',
-    mag: 'linear',
-    min: 'linear'
+    width: SIZE, 
+    height: SIZE,
+    wrap: 'repeat'
   })
 })
 const camera = Camera(regl, { 
@@ -324,23 +326,28 @@ var then = 0
 var now = 0
 var dT = 0
 
+var b = null
+
+window.getPixels = function () { console.log(b) }
+
 document.body.style.backgroundColor = 'black'
 regl.frame(function () {
-  const u_src = velocityBuffers[0]
-  const u_dest = velocityBuffers[1]
-
   const color_src = colorBuffers[index]
+  const u_src = velocityBuffers[index]
   const i = (index + 1) % 2
   const color_dest = colorBuffers[i]
+  const u_dest = velocityBuffers[i]
 
   index = i 
   then = now
   now = performance.now()
   dT = 1
-  advect({ dT, u: u_src, q: u_src, dest: u_dest })
-  divergence({ w: u_dest, dest: divergenceBuffer })
-  const p = pressure(divergenceBuffer, pressureBuffers, 60)
-  subtract_gradient({ p: p, w: u_dest, dest: u_src })
   advect({ dT, u: u_src, q: color_src, dest: color_dest })
+  advect({ dT, u: u_src, q: u_src, dest: u_dest })
+  divergence({ w: u_dest, dest: divergenceBuffer }, _ => {
+    b = regl.read()
+  })
+  const p = pressure(divergenceBuffer, pressureBuffers, 10)
+  subtract_gradient({ p: p, w: u_dest, dest: u_src })
   camera(_ => render({ field: color_dest }))
 })
