@@ -1,0 +1,31 @@
+{
+  "name": "fluid",
+  "version": "1.0.0",
+  "description": "Fluid demos",
+  "main": "index.js",
+  "dependencies": {
+    "es2020": "^1.1.9"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "node test",
+    "build": "browserify lessons/01-2d-simple.js | indexhtmlify > public/index.html"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stevekane/fluid.git"
+  },
+  "keywords": [
+    "fluids",
+    "webgl",
+    "regl",
+    "cfd",
+    "sph"
+  ],
+  "author": "Steve Kane",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/stevekane/fluid/issues"
+  },
+  "homepage": "https://github.com/stevekane/fluid#readme"
+}
