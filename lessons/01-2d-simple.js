@@ -12,7 +12,8 @@ function field ( regl, width, height, data ) {
     wrap: 'repeat',
     mag: 'linear',
     min: 'linear',
-    type: 'float'
+    type: 'float',
+    format: 'rgba'
   }
 
   return [
@@ -41,7 +42,7 @@ const regl = Regl({
   ]
 })
 
-const SIZE = 128
+const SIZE = 256
 
 const initialVelocity = TextureBuffer(SIZE, SIZE, 4)
 const initialColors = TextureBuffer(SIZE, SIZE, 4)
@@ -49,8 +50,8 @@ const initialPressures = TextureBuffer(SIZE, SIZE, 4)
 
 for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
   for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
-    initialVelocity.set(i, j, 0, cos((i + j) / 4)) 
-    initialVelocity.set(i, j, 1, sin((j - i) / 4))
+    initialVelocity.set(i, j, 0, cos((i + j) / 4) + Math.random()) 
+    initialVelocity.set(i, j, 1, sin((j - i) / 4) + Math.random())
     initialColors.set(i, j, 0, i / SIZE)
     initialColors.set(i, j, 1, j / SIZE)
   }
@@ -65,6 +66,7 @@ const divergenceBuffer = regl.framebuffer({
   stencil: false,
   color: regl.texture({ 
     type: 'float', 
+    format: 'rgba',
     width: SIZE, 
     height: SIZE,
     wrap: 'repeat'
@@ -116,6 +118,7 @@ const advect = regl({
     dT: regl.prop('dT'),
     rd: regl.prop('rd')
   },
+  depth: { enable: false },
   count: 6,
   framebuffer: regl.prop('dest')
 })
@@ -137,7 +140,7 @@ const divergence = regl({
       float wT = texture2D(w, coord + rd.y).y;
       float divergence = .5 * (wR - wL + wT - wB);
 
-      gl_FragColor = vec4(divergence, 0, 0, 1);
+      gl_FragColor = vec4(divergence);
     }
   `,
   uniforms: {
@@ -148,6 +151,7 @@ const divergence = regl({
     position: fullScreenQuad 
   },
   count: 6,
+  depth: { enable: false },
   framebuffer: regl.prop('dest')
 })
 
@@ -165,21 +169,21 @@ const pressure_jacobi = regl({
     void main () {
       float alpha = -1.;
       float rBeta = .25;
-      float xL = texture2D(x, coord - rd.x).x; 
-      float xR = texture2D(x, coord + rd.x).x; 
-      float xB = texture2D(x, coord - rd.y).x; 
-      float xT = texture2D(x, coord + rd.y).x; 
+      vec2 dx = vec2(rd.x, 0);
+      vec2 dy = vec2(0, rd.y);
+      float xL = texture2D(x, coord - dx).x; 
+      float xR = texture2D(x, coord + dx).x; 
+      float xB = texture2D(x, coord - dy).x; 
+      float xT = texture2D(x, coord + dy).x; 
       float bC = texture2D(b, coord).x;
       float x_out = (alpha * bC + xL + xR + xB + xT) * rBeta;
 
-      gl_FragColor = vec4(x_out, 0, 0, 1);
+      gl_FragColor = vec4(x_out);
     } 
   `,
   uniforms: { 
     x: regl.prop('x'), 
     b: regl.prop('b'), 
-    alpha: regl.prop('alpha'), 
-    rBeta: regl.prop('rBeta'), 
     dT: regl.prop('dT'),
     rd: regl.prop('rd')
   },
@@ -187,6 +191,7 @@ const pressure_jacobi = regl({
     position: fullScreenQuad 
   },
   count: 6,
+  depth: { enable: false },
   framebuffer: regl.prop('dest')
 })
 
@@ -202,10 +207,12 @@ const subtract_gradient = regl({
     varying vec2 coord;
 
     void main () {
-      float pL = texture2D(pressure, coord - rd.x).x;
-      float pR = texture2D(pressure, coord + rd.x).x;
-      float pB = texture2D(pressure, coord - rd.y).x;
-      float pT = texture2D(pressure, coord + rd.y).x;
+      vec2 dx = vec2(rd.x, 0);
+      vec2 dy = vec2(0, rd.y);
+      float pL = texture2D(pressure, coord - dx).x;
+      float pR = texture2D(pressure, coord + dx).x;
+      float pB = texture2D(pressure, coord - dy).x;
+      float pT = texture2D(pressure, coord + dy).x;
       vec2 v = texture2D(velocity, coord).xy;
       vec2 grad_p = .5 * vec2(pR - pL, pT - pB);
 
@@ -221,6 +228,7 @@ const subtract_gradient = regl({
     position: fullScreenQuad
   },
   count: 6,
+  depth: { enable: false },
   framebuffer: regl.prop('dest')
 })
 
@@ -267,23 +275,16 @@ function pressure ( rd, b, ps, count ) {
   var dest
 
   for ( ; i < count; i++ ) {
-    src = ps[index]
+    x = ps[index]
     index = (index + 1) % 2
     dest = ps[index]
-    pressure_jacobi({ 
-      rd: rd,
-      b: b, 
-      x: src,
-      dest: dest,
-    })
+    pressure_jacobi({ rd, b, x, dest })
   }
   return ps[index]
 }
 
 var index = 0
-var then = 0
-var now = 0
-var dT = 0
+var p = null
 
 document.body.style.backgroundColor = 'black'
 regl.frame(function () {
@@ -293,15 +294,14 @@ regl.frame(function () {
   const color_dest = colorBuffers[i]
   const u_dest = velocityBuffers[i]
   const rd = [ 1 / SIZE, 1 / SIZE ]
+  const dT = 1
 
   index = i 
-  then = now
-  now = performance.now()
-  dT = 1
-  advect({ dT: dT, rd: rd, u: u_src, q: u_src, dest: u_dest })
-  divergence({ rd: rd, w: u_dest, dest: divergenceBuffer })
-  const p = pressure(rd, divergenceBuffer, pressureBuffers, 20)
-  subtract_gradient({ rd: rd, p: p, w: u_dest, dest: u_src })
-  advect({ dT: dT, rd: rd, u: u_src, q: color_src, dest: color_dest })
+  advect({ dT, rd, u: u_src, q: u_src, dest: u_dest })
+  // regl({ framebuffer: u_dest })(_ => console.log(regl.read()[0]))
+  divergence({ rd, w: u_dest, dest: divergenceBuffer })
+  p = pressure(rd, divergenceBuffer, pressureBuffers, 40)
+  subtract_gradient({ rd, p, w: u_dest, dest: u_src })
+  advect({ dT, rd, u: u_src, q: color_src, dest: color_dest })
   camera(_ => render({ field: color_dest }))
 })
