@@ -44,21 +44,15 @@ const field = FrameBufferList.bind(null, regl, TEX_PROPS, FB_PROPS, BUFFER_COUNT
 const kernel = p => regl(extend(KERNEL_PROPS, p))
 
 const initialVelocity = TextureBuffer(SIZE, SIZE, 4)
-const initialColor = TextureBuffer(SIZE, SIZE, 4)
 const initialPressure = TextureBuffer(SIZE, SIZE, 4)
 
 for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
   for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
-    // initialVelocity.set(i, j, 0, Math.random() * i / SIZE)
-    // initialVelocity.set(i, j, 1, Math.random() * j / SIZE)
-    initialColor.set(i, j, 0, j / SIZE)
-    initialColor.set(i, j, 1, i / SIZE)
   }
 }
 
 const velocityBuffers = field(initialVelocity)
 const pressureBuffers = field(initialPressure)
-const colorBuffers = field(initialColor)
 const divergenceBuffer = regl.framebuffer(extend(FB_PROPS, { 
   color: regl.texture(TEX_PROPS)
 }))
@@ -147,41 +141,21 @@ const divergence = kernel({
   }
 })
 
-/*
-precision highp float;
-uniform sampler2D pressure;
-uniform sampler2D divergence;
-uniform float alpha;
-uniform float beta;
-uniform vec2 px;
-varying vec2 uv;
-
-void main(){
-  float x0 = texture2D(pressure, uv-vec2(px.x, 0)).r;
-  float x1 = texture2D(pressure, uv+vec2(px.x, 0)).r;
-  float y0 = texture2D(pressure, uv-vec2(0, px.y)).r;
-  float y1 = texture2D(pressure, uv+vec2(0, px.y)).r;
-  float d = texture2D(divergence, uv).r;
-  float relaxed = (x0 + x1 + y0 + y1 + alpha * d) * beta;
-
-  gl_FragColor = vec4(relaxed);
-}
-*/
-const pressure_jacobi = kernel({
+const jacobi = kernel({
   frag: `
     precision highp float;
 
     uniform sampler2D x;
     uniform sampler2D b;
     uniform vec2 rd;
+    uniform float alpha;
+    uniform float rBeta;
 
     varying vec2 uv;
 
     void main () {
       vec2 dx = vec2(rd.x, 0);
       vec2 dy = vec2(0, rd.y);
-      float alpha = -1.;
-      float rBeta = .25;
       float xL = texture2D(x, uv - dx).x; 
       float xR = texture2D(x, uv + dx).x; 
       float xB = texture2D(x, uv - dy).x; 
@@ -195,6 +169,8 @@ const pressure_jacobi = kernel({
   uniforms: { 
     x: regl.prop('x'), 
     b: regl.prop('b'), 
+    alpha: regl.prop('alpha'),
+    rBeta: regl.prop('rBeta'),
     rd: regl.prop('rd')
   }
 })
@@ -251,8 +227,8 @@ const render = regl({
     varying vec2 uv;
 
     void main () {
-      vec2 velocity = abs(texture2D(u, uv).xy);
-      float pressure = abs(texture2D(p, uv).x);
+      vec2 velocity = texture2D(u, uv).xy * 1.5 + .5;
+      float pressure = texture2D(p, uv).x;
 
       gl_FragColor = vec4(pressure, velocity, 1);
     }
@@ -282,7 +258,7 @@ function TextureBuffer ( w, h, d ) {
   return NDArray(new Float32Array(w * h * d), [ w, h, d ])
 }
 
-function pressure ( rd, b, ps, count ) {
+function pressure ( { rd, b, alpha, rBeta }, ps, count ) {
   var i = 0
   var index = 0
   var src
@@ -292,22 +268,18 @@ function pressure ( rd, b, ps, count ) {
     x = ps[index]
     index = (index + 1) % 2
     dst = ps[index]
-    pressure_jacobi({ rd, b, x, dst })
+    jacobi({ rd, alpha, rBeta, b, x, dst })
   }
   return ps[index]
 }
 
-var index = 0
 var p = null
 var c = [ 0, 0 ]
 
 regl.frame(function ({ tick }) {
   const ITERATION_COUNT = 60
-  const u_src = velocityBuffers[index]
-  const color_src = colorBuffers[index]
-  const i = (index + 1) % 2
-  const u_dst = velocityBuffers[i]
-  const color_dst = colorBuffers[i]
+  const u_src = velocityBuffers[0]
+  const u_dst = velocityBuffers[1]
   const dT = DT
   const rd = [ 
     1 / SIZE, 
@@ -318,18 +290,17 @@ regl.frame(function ({ tick }) {
     cos(tick / 10) * sin(tick / 100) * .5 + .5
   ]
   const force = [ 
-    1000000 * (center[0] - c[0]), 
-    1000000 * (center[1] - c[1]) 
+    100000 * (center[0] - c[0]), 
+    100000 * (center[1] - c[1]) 
   ]
 
   c[0] = center[0]
   c[1] = center[1]
   index = i 
-  advect({ dT, rd, u: u_src, q: color_src, dst: color_dst })
   advect({ dT, rd, u: u_src, q: u_src, dst: u_dst })
   add_force({ rd, force, center, dst: u_dst })
   divergence({ rd, w: u_dst, dst: divergenceBuffer })
-  p = pressure(rd, divergenceBuffer, pressureBuffers, ITERATION_COUNT)
+  p = pressure({ rd, alpha: -1, rBeta: .25, b: divergenceBuffer }, pressureBuffers, ITERATION_COUNT)
   subtract_gradient({ rd, p, w: u_dst, dst: u_src })
-  render({ p: p, u: u_src })
+  render({ p, u: u_src })
 })
