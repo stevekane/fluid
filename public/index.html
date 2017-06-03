@@ -14,13 +14,9 @@ const { cos, sin } = Math
 const extend = (a, b) => Object.assign(b, a)
 
 const regl = Regl({
-  extensions: [ 
-    'OES_texture_float', 
-    'OES_texture_float_linear',
-    'WEBGL_draw_buffers'
-  ]
+  extensions: [ 'OES_texture_float', 'OES_texture_float_linear' ]
 })
-
+const DT = 1 / 60
 const fullScreenQuad = regl.buffer(FullScreenQuad(4))
 const SIZE = 128
 const BUFFER_COUNT = 2
@@ -29,9 +25,9 @@ const TEX_PROPS = {
   format: 'rgba',
   mag: 'linear',
   min: 'linear',
+  wrap: 'repeat',
   width: SIZE, 
-  height: SIZE,
-  wrap: 'repeat'
+  height: SIZE
 }
 const FB_PROPS = {
   depth: false,
@@ -62,10 +58,10 @@ const initialPressure = TextureBuffer(SIZE, SIZE, 4)
 
 for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
   for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
-    initialVelocity.set(i, j, 0, Math.random() * 2 - 1)
-    initialVelocity.set(i, j, 1, sin(Math.PI * i / SIZE))
-    initialColor.set(i, j, 0, i / SIZE)
-    initialColor.set(i, j, 1, j / SIZE)
+    // initialVelocity.set(i, j, 0, Math.random() * i / SIZE)
+    // initialVelocity.set(i, j, 1, Math.random() * j / SIZE)
+    initialColor.set(i, j, 0, j / SIZE)
+    initialColor.set(i, j, 1, i / SIZE)
   }
 }
 
@@ -116,12 +112,12 @@ const add_force = kernel({
 
     uniform vec2 force;
     uniform vec2 center;
-    uniform vec2 scale;
+    uniform vec2 rd;
 
     varying vec2 uv;
 
     void main() {
-      float distance = 1.0 - min(length((uv - center) / scale), 1.0);
+      float distance = 1.0 - min(length((uv - center) / rd), 1.0);
 
       gl_FragColor = vec4(force * distance, 0, 1);
     }
@@ -129,7 +125,7 @@ const add_force = kernel({
   uniforms: {
     force: regl.prop('force'),
     center: regl.prop('center'),
-    scale: regl.prop('scale')
+    rd: regl.prop('rd')
   }
 })
 
@@ -143,11 +139,13 @@ const divergence = kernel({
     varying vec2 uv;
 
     void main () {
-      float wL = texture2D(w, uv - rd.x).x;
-      float wR = texture2D(w, uv + rd.x).x;
-      float wB = texture2D(w, uv - rd.y).y;
-      float wT = texture2D(w, uv + rd.y).y;
-      float divergence = .5 * (wR - wL + wT - wB);
+      vec2 dx = vec2(rd.x, 0);
+      vec2 dy = vec2(0, rd.y);
+      float wL = texture2D(w, uv - dx).x;
+      float wR = texture2D(w, uv + dx).x;
+      float wB = texture2D(w, uv - dy).y;
+      float wT = texture2D(w, uv + dy).y;
+      float divergence = (wR - wL + wT - wB) * .5;
 
       gl_FragColor = vec4(divergence);
     }
@@ -158,6 +156,26 @@ const divergence = kernel({
   }
 })
 
+/*
+precision highp float;
+uniform sampler2D pressure;
+uniform sampler2D divergence;
+uniform float alpha;
+uniform float beta;
+uniform vec2 px;
+varying vec2 uv;
+
+void main(){
+  float x0 = texture2D(pressure, uv-vec2(px.x, 0)).r;
+  float x1 = texture2D(pressure, uv+vec2(px.x, 0)).r;
+  float y0 = texture2D(pressure, uv-vec2(0, px.y)).r;
+  float y1 = texture2D(pressure, uv+vec2(0, px.y)).r;
+  float d = texture2D(divergence, uv).r;
+  float relaxed = (x0 + x1 + y0 + y1 + alpha * d) * beta;
+
+  gl_FragColor = vec4(relaxed);
+}
+*/
 const pressure_jacobi = kernel({
   frag: `
     precision highp float;
@@ -290,24 +308,39 @@ function pressure ( rd, b, ps, count ) {
 
 var index = 0
 var p = null
+var c = [ 0, 0 ]
 
-regl.frame(function () {
+regl.frame(function ({ tick }) {
   const ITERATION_COUNT = 60
   const u_src = velocityBuffers[index]
   const color_src = colorBuffers[index]
   const i = (index + 1) % 2
   const u_dst = velocityBuffers[i]
   const color_dst = colorBuffers[i]
-  const rd = [ 1 / SIZE, 1 / SIZE ]
-  const dT = 1 / 60
+  const dT = DT
+  const rd = [ 
+    1 / SIZE, 
+    1 / SIZE 
+  ]
+  const center = [ 
+    sin(tick / 10) * cos(tick / 100) * .5 + .5, 
+    cos(tick / 10) * sin(tick / 100) * .5 + .5
+  ]
+  const force = [ 
+    1000000 * (center[0] - c[0]), 
+    1000000 * (center[1] - c[1]) 
+  ]
 
+  c[0] = center[0]
+  c[1] = center[1]
   index = i 
   advect({ dT, rd, u: u_src, q: color_src, dst: color_dst })
   advect({ dT, rd, u: u_src, q: u_src, dst: u_dst })
+  add_force({ rd, force, center, dst: u_dst })
   divergence({ rd, w: u_dst, dst: divergenceBuffer })
   p = pressure(rd, divergenceBuffer, pressureBuffers, ITERATION_COUNT)
   subtract_gradient({ rd, p, w: u_dst, dst: u_src })
-  render({ p: color_dst, u: u_src })
+  render({ p: p, u: u_src })
 })
 
 },{"full-screen-quad":2,"ndarray":5,"regl":6}],2:[function(require,module,exports){
