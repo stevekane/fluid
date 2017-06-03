@@ -4,36 +4,6 @@ const NDArray = require('ndarray')
 const { cos, sin } = Math
 const extend = (a, b) => Object.assign(b, a)
 
-function field ( regl, width, height, data ) {
-  const tConfig = { 
-    data, 
-    width, 
-    height, 
-    wrap: 'repeat',
-    mag: 'linear',
-    min: 'linear',
-    type: 'float',
-    format: 'rgba'
-  }
-
-  return [
-    regl.framebuffer({ 
-      color: regl.texture(tConfig),
-      depth: false,
-      stencil: false
-    }),
-    regl.framebuffer({ 
-      color: regl.texture(tConfig),
-      depth: false,
-      stencil: false
-    })
-  ]
-}
-
-function TextureBuffer ( w, h, d ) {
-  return NDArray(new Float32Array(w * h * d), [ w, h, d ])
-}
-
 const regl = Regl({
   extensions: [ 
     'OES_texture_float', 
@@ -42,53 +12,62 @@ const regl = Regl({
   ]
 })
 
-const SIZE = 128
-
-const initialVelocity = TextureBuffer(SIZE, SIZE, 4)
-const initialColors = TextureBuffer(SIZE, SIZE, 4)
-const initialPressures = TextureBuffer(SIZE, SIZE, 4)
-
-for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
-  for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
-    initialVelocity.set(i, j, 0, Math.random() * 2 - 1)
-    initialVelocity.set(i, j, 1, sin(Math.PI * i / SIZE))
-    initialColors.set(i, j, 0, i / SIZE)
-    initialColors.set(i, j, 1, j / SIZE)
-  }
-}
-
 const fullScreenQuad = regl.buffer(FullScreenQuad(4))
-const velocityBuffers = field(regl, SIZE, SIZE, initialVelocity)
-const pressureBuffers = field(regl, SIZE, SIZE, initialPressures)
-const colorBuffers = field(regl, SIZE, SIZE, initialColors)
-const divergenceBuffer = regl.framebuffer({ 
+const SIZE = 128
+const BUFFER_COUNT = 2
+const TEX_PROPS = {
+  type: 'float', 
+  format: 'rgba',
+  mag: 'linear',
+  min: 'linear',
+  width: SIZE, 
+  height: SIZE,
+  wrap: 'repeat'
+}
+const FB_PROPS = {
   depth: false,
-  stencil: false,
-  color: regl.texture({ 
-    type: 'float', 
-    format: 'rgba',
-    width: SIZE, 
-    height: SIZE,
-    wrap: 'repeat'
-  })
-})
-
-const kernel = {
+  stencil: false
+}
+const KERNEL_PROPS = {
   attributes: { position: fullScreenQuad },
   count: 6,
   framebuffer: regl.prop('dst'),
   vert: `
     attribute vec4 position;
 
-    varying vec2 coord;
+    varying vec2 uv;
 
     void main () {
-      coord = position.xy * .5 + vec2(.5);
+      uv = position.xy * .5 + vec2(.5);
       gl_Position = position;
     }
   `
 }
-const advect = regl(extend(kernel, {
+
+const field = FrameBufferList.bind(null, regl, TEX_PROPS, FB_PROPS, BUFFER_COUNT)
+const kernel = p => regl(extend(KERNEL_PROPS, p))
+
+const initialVelocity = TextureBuffer(SIZE, SIZE, 4)
+const initialColor = TextureBuffer(SIZE, SIZE, 4)
+const initialPressure = TextureBuffer(SIZE, SIZE, 4)
+
+for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
+  for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
+    initialVelocity.set(i, j, 0, Math.random() * 2 - 1)
+    initialVelocity.set(i, j, 1, sin(Math.PI * i / SIZE))
+    initialColor.set(i, j, 0, i / SIZE)
+    initialColor.set(i, j, 1, j / SIZE)
+  }
+}
+
+const velocityBuffers = field(initialVelocity)
+const pressureBuffers = field(initialPressure)
+const colorBuffers = field(initialColor)
+const divergenceBuffer = regl.framebuffer(extend(FB_PROPS, { 
+  color: regl.texture(TEX_PROPS)
+}))
+
+const advect = kernel({
   frag: `
     precision highp float;
 
@@ -97,11 +76,11 @@ const advect = regl(extend(kernel, {
     uniform vec2 rd;
     uniform float dT;
 
-    varying vec2 coord;
+    varying vec2 uv;
 
     void main () {
-      vec2 velocity = texture2D(u, coord).xy;
-      vec2 position = coord - velocity * rd * dT;
+      vec2 velocity = texture2D(u, uv).xy;
+      vec2 position = uv - velocity * rd * dT;
       vec2 q_out = texture2D(q, position).xy;
 
       gl_FragColor = vec4(q_out, 0, 1);
@@ -113,9 +92,9 @@ const advect = regl(extend(kernel, {
     dT: regl.prop('dT'),
     rd: regl.prop('rd')
   },
-}))
+})
 
-const add_force = regl(extend(kernel, {
+const add_force = kernel({
   blend: {
     enable: true,
     func: {
@@ -130,10 +109,10 @@ const add_force = regl(extend(kernel, {
     uniform vec2 center;
     uniform vec2 scale;
 
-    varying vec2 coord;
+    varying vec2 uv;
 
     void main() {
-      float distance = 1.0 - min(length((coord - center) / scale), 1.0);
+      float distance = 1.0 - min(length((uv - center) / scale), 1.0);
 
       gl_FragColor = vec4(force * distance, 0, 1);
     }
@@ -143,22 +122,22 @@ const add_force = regl(extend(kernel, {
     center: regl.prop('center'),
     scale: regl.prop('scale')
   }
-}))
+})
 
-const divergence = regl(extend(kernel, {
+const divergence = kernel({
   frag: `
     precision highp float;
 
     uniform sampler2D w;
     uniform vec2 rd;
 
-    varying vec2 coord;
+    varying vec2 uv;
 
     void main () {
-      float wL = texture2D(w, coord - rd.x).x;
-      float wR = texture2D(w, coord + rd.x).x;
-      float wB = texture2D(w, coord - rd.y).y;
-      float wT = texture2D(w, coord + rd.y).y;
+      float wL = texture2D(w, uv - rd.x).x;
+      float wR = texture2D(w, uv + rd.x).x;
+      float wB = texture2D(w, uv - rd.y).y;
+      float wT = texture2D(w, uv + rd.y).y;
       float divergence = .5 * (wR - wL + wT - wB);
 
       gl_FragColor = vec4(divergence);
@@ -168,9 +147,9 @@ const divergence = regl(extend(kernel, {
     w: regl.prop('w'),
     rd: regl.prop('rd')
   }
-}))
+})
 
-const pressure_jacobi = regl(extend(kernel, {
+const pressure_jacobi = kernel({
   frag: `
     precision highp float;
 
@@ -178,18 +157,18 @@ const pressure_jacobi = regl(extend(kernel, {
     uniform sampler2D b;
     uniform vec2 rd;
 
-    varying vec2 coord;
+    varying vec2 uv;
 
     void main () {
       vec2 dx = vec2(rd.x, 0);
       vec2 dy = vec2(0, rd.y);
       float alpha = -1.;
       float rBeta = .25;
-      float xL = texture2D(x, coord - dx).x; 
-      float xR = texture2D(x, coord + dx).x; 
-      float xB = texture2D(x, coord - dy).x; 
-      float xT = texture2D(x, coord + dy).x; 
-      float bC = texture2D(b, coord).x;
+      float xL = texture2D(x, uv - dx).x; 
+      float xR = texture2D(x, uv + dx).x; 
+      float xB = texture2D(x, uv - dy).x; 
+      float xT = texture2D(x, uv + dy).x; 
+      float bC = texture2D(b, uv).x;
       float x_out = (alpha * bC + xL + xR + xB + xT) * rBeta;
 
       gl_FragColor = vec4(x_out);
@@ -200,9 +179,9 @@ const pressure_jacobi = regl(extend(kernel, {
     b: regl.prop('b'), 
     rd: regl.prop('rd')
   }
-}))
+})
 
-const subtract_gradient = regl(extend(kernel, {
+const subtract_gradient = kernel({
   frag: `
     precision highp float;
 
@@ -210,16 +189,16 @@ const subtract_gradient = regl(extend(kernel, {
     uniform sampler2D velocity;
     uniform vec2 rd;
 
-    varying vec2 coord;
+    varying vec2 uv;
 
     void main () {
       vec2 dx = vec2(rd.x, 0);
       vec2 dy = vec2(0, rd.y);
-      float pL = texture2D(pressure, coord - dx).x;
-      float pR = texture2D(pressure, coord + dx).x;
-      float pB = texture2D(pressure, coord - dy).x;
-      float pT = texture2D(pressure, coord + dy).x;
-      vec2 v = texture2D(velocity, coord).xy;
+      float pL = texture2D(pressure, uv - dx).x;
+      float pR = texture2D(pressure, uv + dx).x;
+      float pB = texture2D(pressure, uv - dy).x;
+      float pT = texture2D(pressure, uv + dy).x;
+      vec2 v = texture2D(velocity, uv).xy;
       vec2 grad_p = .5 * vec2(pR - pL, pT - pB);
 
       gl_FragColor = vec4(v - grad_p, 0, 1);
@@ -230,18 +209,18 @@ const subtract_gradient = regl(extend(kernel, {
     velocity: regl.prop('w'),
     rd: regl.prop('rd')
   }
-}))
+})
 
 const render = regl({
   vert: `
     attribute vec4 position; 
 
-    varying vec2 v_uv;
+    varying vec2 uv;
 
     const vec2 offset = vec2(.5);
 
     void main () {
-      v_uv = position.xy * .5 + offset;
+      uv = position.xy * .5 + offset;
       gl_Position = position; 
     }
   `,
@@ -251,11 +230,11 @@ const render = regl({
     uniform sampler2D u;
     uniform sampler2D p;
 
-    varying vec2 v_uv;
+    varying vec2 uv;
 
     void main () {
-      vec2 velocity = abs(texture2D(u, v_uv).xy);
-      float pressure = abs(texture2D(p, v_uv).x);
+      vec2 velocity = abs(texture2D(u, uv).xy);
+      float pressure = abs(texture2D(p, uv).x);
 
       gl_FragColor = vec4(pressure, velocity, 1);
     }
@@ -269,6 +248,21 @@ const render = regl({
   },
   count: 6
 })
+
+function FrameBufferList ( regl, txprops, fbprops, count, data ) {
+  const l = []
+
+  for ( var i = 0, fb, color; i < count; i++ ) {
+    color = regl.texture(extend(txprops, { data }))
+    fb = regl.framebuffer(extend(fbprops, { color }))
+    l.push(fb)
+  }
+  return l
+}
+
+function TextureBuffer ( w, h, d ) {
+  return NDArray(new Float32Array(w * h * d), [ w, h, d ])
+}
 
 function pressure ( rd, b, ps, count ) {
   var i = 0
