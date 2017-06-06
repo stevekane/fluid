@@ -1,7 +1,7 @@
 const Regl = require('regl')
-const FullScreenQuad = require('full-screen-quad')
 const NDArray = require('ndarray')
-const { cos, sin } = Math
+const FullScreenQuad = require('full-screen-quad')
+const { cos, sin, random } = Math
 const extend = (a, b) => Object.assign(b, a)
 
 const regl = Regl({
@@ -9,7 +9,7 @@ const regl = Regl({
 })
 const DT = 1 / 60
 const fullScreenQuad = regl.buffer(FullScreenQuad(4))
-const SIZE = 128
+const SIZE = 256
 const BUFFER_COUNT = 2
 const TEX_PROPS = {
   type: 'float', 
@@ -28,6 +28,7 @@ const KERNEL_PROPS = {
   attributes: { position: fullScreenQuad },
   count: 6,
   framebuffer: regl.prop('dst'),
+  depth: { enable: false },
   vert: `
     attribute vec4 position;
 
@@ -45,14 +46,19 @@ const kernel = p => regl(extend(KERNEL_PROPS, p))
 
 const initialVelocity = TextureBuffer(SIZE, SIZE, 4)
 const initialPressure = TextureBuffer(SIZE, SIZE, 4)
+const initialColor = TextureBuffer(SIZE, SIZE, 4)
 
 for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
   for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
+    initialColor.set(i, j, 0, sin(10 * Math.PI * i / SIZE))
+    initialColor.set(i, j, 1, j / SIZE)
+    initialColor.set(i, j, 2, Math.random())
   }
 }
 
 const velocityBuffers = field(initialVelocity)
 const pressureBuffers = field(initialPressure)
+const colorBuffers = field(initialColor)
 const divergenceBuffer = regl.framebuffer(extend(FB_PROPS, { 
   color: regl.texture(TEX_PROPS)
 }))
@@ -88,7 +94,7 @@ const add_force = kernel({
   blend: {
     enable: true,
     func: {
-      src: 'src alpha',
+      src: 'one',
       dst: 'one'
     }
   },
@@ -205,19 +211,7 @@ const subtract_gradient = kernel({
   }
 })
 
-const render = regl({
-  vert: `
-    attribute vec4 position; 
-
-    varying vec2 uv;
-
-    const vec2 offset = vec2(.5);
-
-    void main () {
-      uv = position.xy * .5 + offset;
-      gl_Position = position; 
-    }
-  `,
+const render = kernel({
   frag: `
     precision highp float; 
 
@@ -233,14 +227,29 @@ const render = regl({
       gl_FragColor = vec4(pressure, velocity, 1);
     }
   `,
-  attributes: {
-    position: fullScreenQuad 
-  },
   uniforms: {
     u: regl.prop('u'),
     p: regl.prop('p') 
-  },
-  count: 6
+  }
+})
+
+const render_color = kernel({
+  frag: `
+    precision highp float;
+    
+    uniform sampler2D color;
+
+    varying vec2 uv;
+
+    void main () {
+      vec3 c = texture2D(color, uv).rgb;
+
+      gl_FragColor = vec4(c, 1.);
+    }
+  `,
+  uniforms: {
+    color: regl.prop('color') 
+  }
 })
 
 function FrameBufferList ( regl, txprops, fbprops, count, data ) {
@@ -258,7 +267,7 @@ function TextureBuffer ( w, h, d ) {
   return NDArray(new Float32Array(w * h * d), [ w, h, d ])
 }
 
-function pressure ( { rd, b, alpha, rBeta }, ps, count ) {
+function approximate_pressure ( { rd, b, alpha, rBeta }, ps, count ) {
   var i = 0
   var index = 0
   var src
@@ -273,34 +282,41 @@ function pressure ( { rd, b, alpha, rBeta }, ps, count ) {
   return ps[index]
 }
 
-var p = null
-var c = [ 0, 0 ]
+const c0 = [ 0, 0 ]
+var index = 0
 
 regl.frame(function ({ tick }) {
-  const ITERATION_COUNT = 60
+  const ITERATION_COUNT = 20
   const u_src = velocityBuffers[0]
   const u_dst = velocityBuffers[1]
+  const color_src = colorBuffers[index]
+  index = ( index + 1 ) % 2
+  const color_dst = colorBuffers[index]
   const dT = DT
   const rd = [ 
     1 / SIZE, 
     1 / SIZE 
   ]
+  const magnitude = 100000000 // Steve: very high magnitude is needed
+  const size = 1
   const center = [ 
-    sin(tick / 10) * cos(tick / 100) * .5 + .5, 
-    cos(tick / 10) * sin(tick / 100) * .5 + .5
+    cos(tick / 40) * .5 + .5,
+    sin(tick / 20) * .5 + .5
   ]
+  const dx = center[0] - c0[0]
+  const dy = center[1] - c0[1]
   const force = [ 
-    100000 * (center[0] - c[0]), 
-    100000 * (center[1] - c[1]) 
+    dx * rd[0] * size * magnitude,
+    dy * rd[1] * size * magnitude
   ]
 
-  c[0] = center[0]
-  c[1] = center[1]
-  index = i 
+  c0[0] = center[0]
+  c0[1] = center[1]
   advect({ dT, rd, u: u_src, q: u_src, dst: u_dst })
+  advect({ dT, rd, u: u_src, q: color_src, dst: color_dst })
   add_force({ rd, force, center, dst: u_dst })
   divergence({ rd, w: u_dst, dst: divergenceBuffer })
-  p = pressure({ rd, alpha: -1, rBeta: .25, b: divergenceBuffer }, pressureBuffers, ITERATION_COUNT)
+  const p = approximate_pressure({ rd, alpha: -1, rBeta: .25, b: divergenceBuffer }, pressureBuffers, ITERATION_COUNT)
   subtract_gradient({ rd, p, w: u_dst, dst: u_src })
-  render({ p, u: u_src })
+  render_color({ color: color_dst })
 })
