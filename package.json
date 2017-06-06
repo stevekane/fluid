@@ -11,7 +11,7 @@
   "devDependencies": {},
   "scripts": {
     "test": "node test",
-    "build": "browserify lessons/01-2d-simple.js | indexhtmlify > public/index.html"
+    "build": "browserify lessons/01-2d-simple.js | indexhtmlify > public/index.html",
     "build-master": "browserify lessons/01-2d-simple.js | indexhtmlify > public/master.html"
   },
   "repository": {

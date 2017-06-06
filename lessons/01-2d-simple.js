@@ -51,8 +51,8 @@ const initialColor = TextureBuffer(SIZE, SIZE, 4)
 for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
   for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
     initialColor.set(i, j, 0, sin(10 * Math.PI * i / SIZE))
-    initialColor.set(i, j, 1, j / SIZE)
-    initialColor.set(i, j, 2, Math.random())
+    initialColor.set(i, j, 1, cos(4 * Math.PI * j / SIZE))
+    initialColor.set(i, j, 2, i + j / ( SIZE * 4))
   }
 }
 
@@ -77,9 +77,9 @@ const advect = kernel({
     void main () {
       vec2 velocity = texture2D(u, uv).xy;
       vec2 position = uv - velocity * rd * dT;
-      vec2 q_out = texture2D(q, position).xy;
+      vec3 q_out = texture2D(q, position).xyz;
 
-      gl_FragColor = vec4(q_out, 0, 1);
+      gl_FragColor = vec4(q_out, 1);
     } 
   `,
   uniforms: {
