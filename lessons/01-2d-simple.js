@@ -1,7 +1,7 @@
 const Regl = require('regl')
 const NDArray = require('ndarray')
 const FullScreenQuad = require('full-screen-quad')
-const { cos, sin, random } = Math
+const { abs, cos, sin, random } = Math
 const extend = (a, b) => Object.assign(b, a)
 
 const regl = Regl({
@@ -9,7 +9,7 @@ const regl = Regl({
 })
 const DT = 1 / 60
 const fullScreenQuad = regl.buffer(FullScreenQuad(4))
-const SIZE = 256
+const SIZE = 512
 const BUFFER_COUNT = 2
 const TEX_PROPS = {
   type: 'float', 
@@ -48,11 +48,11 @@ const initialVelocity = TextureBuffer(SIZE, SIZE, 4)
 const initialPressure = TextureBuffer(SIZE, SIZE, 4)
 const initialColor = TextureBuffer(SIZE, SIZE, 4)
 
-for ( var i = 0; i < initialVelocity.shape[0]; i++ ) {
-  for ( var j = 0; j < initialVelocity.shape[1]; j++ ) {
-    initialColor.set(i, j, 0, sin(10 * Math.PI * i / SIZE))
-    initialColor.set(i, j, 1, cos(4 * Math.PI * j / SIZE))
-    initialColor.set(i, j, 2, i + j / ( SIZE * 4))
+for ( var i = 0; i < SIZE; i++ ) {
+  for ( var j = 0; j < SIZE; j++ ) {
+    initialColor.set(i, j, 0, j / SIZE) 
+    initialColor.set(i, j, 1, j / SIZE) 
+    initialColor.set(i, j, 2, Math.max(i, j) / SIZE) 
   }
 }
 
@@ -94,7 +94,7 @@ const add_force = kernel({
   blend: {
     enable: true,
     func: {
-      src: 'src alpha',
+      src: 'one',
       dst: 'one'
     }
   },
@@ -260,11 +260,11 @@ function approximate_pressure ( { rd, b, alpha, rBeta }, ps, count ) {
   return ps[index]
 }
 
-const c0 = [ 0, 0 ]
+var c0 = [ 0, 0 ]
 var index = 0
 
 regl.frame(function ({ tick }) {
-  const ITERATION_COUNT = 20
+  const ITERATION_COUNT = 40
   const u_src = velocityBuffers[0]
   const u_dst = velocityBuffers[1]
   const color_src = colorBuffers[index]
@@ -275,8 +275,8 @@ regl.frame(function ({ tick }) {
     1 / SIZE, 
     1 / SIZE 
   ]
-  const magnitude = 100000000 // Steve: very high magnitude is needed
-  const size = 1
+  const magnitude = 10000 // Steve: very high magnitude is needed
+  const size = 10000
   const center = [ 
     cos(tick / 40) * .5 + .5,
     sin(tick / 20) * .5 + .5

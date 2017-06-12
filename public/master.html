@@ -103,7 +103,7 @@ const add_force = kernel({
   blend: {
     enable: true,
     func: {
-      src: 'one',
+      src: 'src alpha',
       dst: 'one'
     }
   },
@@ -217,28 +217,6 @@ const subtract_gradient = kernel({
     pressure: regl.prop('p'),
     velocity: regl.prop('w'),
     rd: regl.prop('rd')
-  }
-})
-
-const render = kernel({
-  frag: `
-    precision highp float; 
-
-    uniform sampler2D u;
-    uniform sampler2D p;
-
-    varying vec2 uv;
-
-    void main () {
-      vec2 velocity = texture2D(u, uv).xy * 1.5 + .5;
-      float pressure = texture2D(p, uv).x;
-
-      gl_FragColor = vec4(pressure, velocity, 1);
-    }
-  `,
-  uniforms: {
-    u: regl.prop('u'),
-    p: regl.prop('p') 
   }
 })
 
